@@ -1,6 +1,7 @@
 require 'nokogiri'
 require 'gdal'
 require 'zip'
+require 'concurrent'
 
 NODATA_VALUE = -9999.0
 EPSG_CODE = 6668
@@ -8,7 +9,7 @@ EPSG_CODE = 6668
 def convert(input, dst_path, verbose)
   puts "TIF Path: #{dst_path}" if verbose
   doc = Nokogiri::XML(input) {|config| config.huge}
-  
+
   min_coordinates = parse_coordinate(doc.at_xpath('//gml:lowerCorner').text)
   max_coordinates = parse_coordinate(doc.at_xpath('//gml:upperCorner').text)
   raster_width, raster_height, start_coordinates = extract_dimensions(doc)
@@ -83,13 +84,18 @@ end
 def process(zip_path, dst_dir, verbose)
   puts "Processing #{zip_path}" if verbose
   Zip::File.open(zip_path) do |zip_file|
+    thread_pool = Concurrent::FixedThreadPool.new(16)
     zip_file.each do |entry|
-      next unless entry.name.downcase.end_with?('.xml')
-      dst_name = entry.name.sub('.xml', '.tif')
-      dst_path = "#{dst_dir}/#{dst_name}"
-      input = entry.get_input_stream.read
-      convert(input, dst_path, verbose)
+      thread_pool.post do
+        next unless entry.name.downcase.end_with?('.xml')
+        dst_name = entry.name.sub('.xml', '.tif')
+        dst_path = "#{dst_dir}/#{dst_name}"
+        input = entry.get_input_stream.read
+        convert(input, dst_path, verbose)
+      end
     end
+    thread_pool.shutdown
+    thread_pool.wait_for_termination
   end
 end
 
